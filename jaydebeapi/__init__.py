@@ -27,6 +27,7 @@ import time
 import re
 import sys
 import warnings
+import functools
 
 PY2 = sys.version_info[0] == 2
 
@@ -504,6 +505,11 @@ class Cursor(object):
         if is_rs:
             self._rs = self._prep.getResultSet()
             self._meta = self._rs.getMetaData()
+            self._converter_funcs = []
+            for col in range(1, self._meta.getColumnCount() + 1):
+                sqltype = self._meta.getColumnType(col)
+                converter = self._converters.get(sqltype, _unknownSqlTypeConverter)
+                self._converter_funcs.append((col, functools.partial(converter, self._rs)))
             self.rowcount = -1
         else:
             self.rowcount = self._prep.getUpdateCount()
@@ -525,13 +531,7 @@ class Cursor(object):
             raise Error()
         if not self._rs.next():
             return None
-        row = []
-        for col in range(1, self._meta.getColumnCount() + 1):
-            sqltype = self._meta.getColumnType(col)
-            converter = self._converters.get(sqltype, _unknownSqlTypeConverter)
-            v = converter(self._rs, col)
-            row.append(v)
-        return tuple(row)
+        return tuple([f(col) for col, f in self._converter_funcs])
 
     def fetchmany(self, size=None):
         if not self._rs:
@@ -609,13 +609,13 @@ def _to_binary(rs, col):
     return str(java_val)
 
 def _java_to_py(java_method):
+    if PY2:
+        python_types = (int, string_type, type(None), long, float, bool)
+    else:
+        python_types = (int, string_type, type(None), float, bool)
     def to_py(rs, col):
         java_val = rs.getObject(col)
-        if java_val is None:
-            return
-        if PY2 and isinstance(java_val, (string_type, int, long, float, bool)):
-            return java_val
-        elif isinstance(java_val, (string_type, int, float, bool)):
+        if isinstance(java_val, python_types):
             return java_val
         return getattr(java_val, java_method)()
     return to_py
